@@ -20,6 +20,17 @@ class BalanceViewController: UIViewController {
         super.init(nibName: nil, bundle: nil)
     }
 
+    deinit {
+        rootView.refreshButton.removeTarget(
+            self,
+            action: #selector(refreshBalance),
+            for: .touchUpInside
+        )
+        notificationCenterTokens.forEach { token in
+            NotificationCenter.default.removeObserver(token)
+        }
+    }
+
     required init?(coder: NSCoder) {
         fatalError("init(coder:) has not been implemented")
     }
@@ -42,7 +53,7 @@ class BalanceViewController: UIViewController {
                 forName: UIApplication.willResignActiveNotification,
                 object: nil,
                 queue: .main
-            ) { [weak self ]_ in
+            ) { [weak self] _ in
                 self?.state.isRedacted = true
             }
         )
@@ -52,7 +63,7 @@ class BalanceViewController: UIViewController {
                 forName: UIApplication.didBecomeActiveNotification,
                 object: nil,
                 queue: .main
-            ) { [weak self ]_ in
+            ) { [weak self] _ in
                 self?.state.isRedacted = false
             }
         )
