@@ -10,10 +10,8 @@ class BalanceViewController: UIViewController {
         didSet { updateView() }
     }
     private let formatDate: (Date) -> String
-    private var buttonCancellable: AnyCancellable?
-    private var appWillResignActiveCancellable: AnyCancellable?
-    private var appDidBecomeActiveCancellable: AnyCancellable?
-
+    private var cancellables: Set<AnyCancellable> = []
+    
     init(
         service: BalanceService,
         formatDate: @escaping (Date) -> String = BalanceViewState.relativeDateFormatter.string(from:)
@@ -22,41 +20,44 @@ class BalanceViewController: UIViewController {
         self.formatDate = formatDate
         super.init(nibName: nil, bundle: nil)
     }
-
+    
     required init?(coder: NSCoder) {
         fatalError("init(coder:) has not been implemented")
     }
-
+    
     override func loadView() {
         view = rootView
     }
-
+    
     override func viewDidLoad() {
         super.viewDidLoad()
-
-        buttonCancellable = rootView.refreshButton.touchUpInsidePublisher
+        
+        rootView.refreshButton.touchUpInsidePublisher
             .sink { [weak self] _ in
                 self?.refreshBalance()
             }
-
-        appWillResignActiveCancellable = NotificationCenter.default
+            .store(in: &cancellables)
+        
+        NotificationCenter.default
             .publisher(for: UIApplication.willResignActiveNotification)
             .sink { [weak self] _ in
                 self?.state.isRedacted = true
             }
-
-        appDidBecomeActiveCancellable = NotificationCenter.default
+            .store(in: &cancellables)
+        
+        NotificationCenter.default
             .publisher(for: UIApplication.didBecomeActiveNotification)
             .sink { [weak self] _ in
                 self?.state.isRedacted = false
             }
+            .store(in: &cancellables)
     }
-
+    
     override func viewDidAppear(_ animated: Bool) {
         super.viewDidAppear(animated)
         refreshBalance()
     }
-
+    
     private func refreshBalance() {
         state.didFail = false
         state.isRefreshing = true
@@ -64,7 +65,7 @@ class BalanceViewController: UIViewController {
             self?.handleResult(result)
         }
     }
-
+    
     private func handleResult(_ result: Result<BalanceResponse, Error>) {
         state.isRefreshing = false
         do {
@@ -73,7 +74,7 @@ class BalanceViewController: UIViewController {
             state.didFail = true
         }
     }
-
+    
     private func updateView() {
         rootView.refreshButton.isHidden = state.isRefreshing
         if state.isRefreshing {
@@ -88,7 +89,7 @@ class BalanceViewController: UIViewController {
         rootView.infoLabel.text = state.infoText(formatDate: formatDate)
         rootView.infoLabel.textColor = state.infoColor
         rootView.redactedOverlay.isHidden = !state.isRedacted
-
+        
         view.setNeedsLayout()
     }
 }
@@ -101,7 +102,7 @@ struct BalanceViewController_Previews: PreviewProvider {
         BalanceViewController(service: FakeBalanceService())
             .staticRepresentable
     }
-
+    
     static var previews: some View {
         Group {
             makePreview()
