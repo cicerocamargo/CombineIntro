@@ -287,6 +287,6 @@ Neat, right? Tests still pass. Here is the [whole change](https://github.com/cic
 
 This is a living document, so I'll be updating it as I progress with the next concepts and refactors.
 
-You can start watching the repo and follow me on [twitter](https://twitter.com/cicerocamargo) for updates.
+You can start watching the repo and follow me on [Twitter](https://twitter.com/cicerocamargo) or [LinkedIn](https://www.linkedin.com/in/cicerocamargo/) to be notified about updates.
 
 If you have suggestions, corrections, etc., feel free to open a Pull Request or send me a message.
