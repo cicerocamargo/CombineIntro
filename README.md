@@ -16,7 +16,7 @@ For us to have a realistic starting point imagine the following: you need to imp
 
 The result looks like this:
 
-![](recording.mp4)
+![](https://github.com/cicerocamargo/CombineIntro/raw/main/recording.mp4)
 
 I went ahead and implemented it in the simplest possible way that I could unit-test. Our starting point will be [this commit](https://github.com/cicerocamargo/CombineIntro/tree/b624810c6a6820b2894e5549458bcf95446c1ab2).
 
