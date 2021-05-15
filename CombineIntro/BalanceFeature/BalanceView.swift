@@ -31,8 +31,8 @@ class BalanceView: UIView {
 
     lazy var activityIndicator = UIActivityIndicatorView(style: .medium)
 
-    let refreshButton: UIButton = {
-        let button = UIButton(type: .system)
+    let refreshButton: CustomButton = {
+        let button = CustomButton(type: .system)
         button.setImage(.init(systemName: "arrow.clockwise"), for: .normal)
         return button
     }()

@@ -17,6 +17,7 @@
 		611203852645558600311AE0 /* UIViewController+Extensions.swift in Sources */ = {isa = PBXBuildFile; fileRef = 611203842645558600311AE0 /* UIViewController+Extensions.swift */; };
 		61372F98264941F20079A228 /* BalanceViewState.swift in Sources */ = {isa = PBXBuildFile; fileRef = 61372F97264941F20079A228 /* BalanceViewState.swift */; };
 		61E0BE8E264BDED500414040 /* CombineIntroTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 61E0BE8D264BDED500414040 /* CombineIntroTests.swift */; };
+		61F14E2A264FD7AF00B88374 /* CustomButton.swift in Sources */ = {isa = PBXBuildFile; fileRef = 61F14E29264FD7AF00B88374 /* CustomButton.swift */; };
 /* End PBXBuildFile section */
 
 /* Begin PBXContainerItemProxy section */
@@ -44,6 +45,7 @@
 		61E0BE8B264BDED500414040 /* CombineIntroTests.xctest */ = {isa = PBXFileReference; explicitFileType = wrapper.cfbundle; includeInIndex = 0; path = CombineIntroTests.xctest; sourceTree = BUILT_PRODUCTS_DIR; };
 		61E0BE8D264BDED500414040 /* CombineIntroTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CombineIntroTests.swift; sourceTree = "<group>"; };
 		61E0BE8F264BDED500414040 /* Info.plist */ = {isa = PBXFileReference; lastKnownFileType = text.plist.xml; path = Info.plist; sourceTree = "<group>"; };
+		61F14E29264FD7AF00B88374 /* CustomButton.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CustomButton.swift; sourceTree = "<group>"; };
 /* End PBXFileReference section */
 
 /* Begin PBXFrameworksBuildPhase section */
@@ -85,6 +87,7 @@
 		611203652645517F00311AE0 /* CombineIntro */ = {
 			isa = PBXGroup;
 			children = (
+				61F14E28264FD79D00B88374 /* CustomViews */,
 				6112037D264552C700311AE0 /* PreviewHelpers */,
 				6112037A2645525000311AE0 /* BalanceFeature */,
 				611203662645517F00311AE0 /* AppDelegate.swift */,
@@ -122,6 +125,14 @@
 				61E0BE8F264BDED500414040 /* Info.plist */,
 			);
 			path = CombineIntroTests;
+			sourceTree = "<group>";
+		};
+		61F14E28264FD79D00B88374 /* CustomViews */ = {
+			isa = PBXGroup;
+			children = (
+				61F14E29264FD7AF00B88374 /* CustomButton.swift */,
+			);
+			path = CustomViews;
 			sourceTree = "<group>";
 		};
 /* End PBXGroup section */
@@ -227,6 +238,7 @@
 				611203672645517F00311AE0 /* AppDelegate.swift in Sources */,
 				61120383264554E300311AE0 /* BalanceService.swift in Sources */,
 				611203812645549F00311AE0 /* BalanceViewController.swift in Sources */,
+				61F14E2A264FD7AF00B88374 /* CustomButton.swift in Sources */,
 				611203852645558600311AE0 /* UIViewController+Extensions.swift in Sources */,
 				61372F98264941F20079A228 /* BalanceViewState.swift in Sources */,
 				611203692645517F00311AE0 /* SceneDelegate.swift in Sources */,
