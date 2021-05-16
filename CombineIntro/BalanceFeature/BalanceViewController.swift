@@ -29,8 +29,8 @@ class BalanceViewController: UIViewController {
     override func viewDidLoad() {
         super.viewDidLoad()
 
-        viewModel.statePublisher
-            .sink { [weak self] _ in self?.updateView() }
+        viewModel.$state
+            .sink { [weak self] in self?.updateView(state: $0) }
             .store(in: &cancellables)
         
         rootView.refreshButton.touchUpInsidePublisher
@@ -43,20 +43,20 @@ class BalanceViewController: UIViewController {
         viewModel.refreshBalance()
     }
     
-    private func updateView() {
-        rootView.refreshButton.isHidden = viewModel.state.isRefreshing
-        if viewModel.state.isRefreshing {
+    private func updateView(state: BalanceViewState) {
+        rootView.refreshButton.isHidden = state.isRefreshing
+        if state.isRefreshing {
             rootView.activityIndicator.startAnimating()
         } else {
             rootView.activityIndicator.stopAnimating()
         }
-        rootView.valueLabel.text = viewModel.state.formattedBalance
-        rootView.valueLabel.alpha = viewModel.state.isRedacted
+        rootView.valueLabel.text = state.formattedBalance
+        rootView.valueLabel.alpha = state.isRedacted
             ? BalanceView.alphaForRedactedValueLabel
             : 1
-        rootView.infoLabel.text = viewModel.state.infoText(formatDate: formatDate)
-        rootView.infoLabel.textColor = viewModel.state.infoColor
-        rootView.redactedOverlay.isHidden = !viewModel.state.isRedacted
+        rootView.infoLabel.text = state.infoText(formatDate: formatDate)
+        rootView.infoLabel.textColor = state.infoColor
+        rootView.redactedOverlay.isHidden = !state.isRedacted
         
         view.setNeedsLayout()
     }
