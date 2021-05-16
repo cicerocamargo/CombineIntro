@@ -28,7 +28,7 @@ Take some time to study the code. Consider starting from `BalanceViewControllerT
 
 OK. Ready? Let's move on.
 
-## It all comes down asynchronous events
+## It all comes down to asynchronous events
 
 Object-Oriented software is about objects sending messages (or *events*) to each other and updating their state correctly upon the reception of the events that they implement or are interested in.
 
@@ -282,6 +282,245 @@ class BalanceViewController: UIViewController {
 ```
 
 Neat, right? Tests still pass. Here is the [whole change](https://github.com/cicerocamargo/CombineIntro/compare/20021065822fe5d4d996e78be42a6edd4d17ec63...b18a1aed2fb471aa1a55b7e9672faa63e543e922). Moving on.
+
+## Refactoring to MVVM
+
+In this section we're going to refactor our component towards the MVVM (Model-View-ViewModel) pattern, and by doing that we're gonna learn how we can use Combine to observe updates in stored values.
+
+Before we start changing the code, let's talk about the role of the `ViewModel`. Comparing our component to a living being, I see the ViewModel as the brain, where the the View/ViewController is the body. The brain tells the body how to behave and how it feels, while the body reacts to the state of the brain and sends signal from the environment for the brain to process. If the organism is too simple, there's no need for a complex brain.
+
+Translating this into developer words, if the component is a dumb one, without any complex/asynchronous behavior, the ViewModel *is* the state that feeds the view and can be modeled as a value type (`struct` or `enum`). If the component contains behavior (which is the case for our Balance component) the ViewModel will encapsulate this behavior and provide a state for the View/ViewController to render. The role of the view layer is just binding correctly to the ViewModel, so that its sends the right events to the ViewModel and always renders the current state.
+
+So let's start by defining a class that will own the state of our `BalanceViewController` and move all the behavior and state updates into this class.
+
+```
+import Combine
+import Foundation
+import UIKit
+
+final class BalanceViewModel {
+    private(set) var state = BalanceViewState()
+    private let service: BalanceService
+    private var cancellables: Set<AnyCancellable> = []
+
+    init(service: BalanceService) {
+        self.service = service
+
+        NotificationCenter.default
+            .publisher(for: UIApplication.willResignActiveNotification)
+            .sink { [weak self] _ in
+                self?.state.isRedacted = true
+            }
+            .store(in: &cancellables)
+
+        NotificationCenter.default
+            .publisher(for: UIApplication.didBecomeActiveNotification)
+            .sink { [weak self] _ in
+                self?.state.isRedacted = false
+            }
+            .store(in: &cancellables)
+    }
+
+    func refreshBalance() {
+        state.didFail = false
+        state.isRefreshing = true
+        service.refreshBalance { [weak self] result in
+            self?.handleResult(result)
+        }
+    }
+
+    private func handleResult(_ result: Result<BalanceResponse, Error>) {
+        state.isRefreshing = false
+        do {
+            state.lastResponse = try result.get()
+        } catch {
+            state.didFail = true
+        }
+    }
+}
+```
+
+Maybe you wrinkled your nose for that `import UIKit` at the top because I'm adding a framework dependency to my ViewModel and that will make it harder to reuse this component in that WatchOS app that some customers have asked for... Yes, I could have left those NotificationCenter subscriptions into the ViewController, but as our ficticious team is also thinking about doing some AB tests for this component using SwiftUI I didn't want to duplicate this. I could also have decoupled the ViewController from the ViewModel by adding a protocol in the middle and creating a decorator to put the NotificationCenter subscriptions... Look, I don't want to overcomplicate things, so let's leave this in the ViewModel and return to our ViewController, which is completely broken, at the moment. After some adjustments, this is what I got:
+
+```
+class BalanceViewController: UIViewController {
+    private let rootView = BalanceView()
+    private let viewModel: BalanceViewModel
+    private let formatDate: (Date) -> String
+    private var cancellables: Set<AnyCancellable> = []
+    
+    init(
+        service: BalanceService,
+        formatDate: @escaping (Date) -> String = BalanceViewState.relativeDateFormatter.string(from:)
+    ) {
+        self.viewModel = .init(service: service)
+        self.formatDate = formatDate
+        super.init(nibName: nil, bundle: nil)
+    }
+
+    (...)    
+    
+    override func viewDidLoad() {
+        super.viewDidLoad()
+        
+        rootView.refreshButton.touchUpInsidePublisher
+            .sink(receiveValue: viewModel.refreshBalance)
+            .store(in: &cancellables)
+    }
+    
+    override func viewDidAppear(_ animated: Bool) {
+        super.viewDidAppear(animated)
+        viewModel.refreshBalance()
+    }
+    
+    private func updateView() {
+        rootView.refreshButton.isHidden = viewModel.state.isRefreshing
+        if viewModel.state.isRefreshing {
+            rootView.activityIndicator.startAnimating()
+        } else {
+            rootView.activityIndicator.stopAnimating()
+        }
+        rootView.valueLabel.text = viewModel.state.formattedBalance
+        rootView.valueLabel.alpha = viewModel.state.isRedacted
+            ? BalanceView.alphaForRedactedValueLabel
+            : 1
+        rootView.infoLabel.text = viewModel.state.infoText(formatDate: formatDate)
+        rootView.infoLabel.textColor = viewModel.state.infoColor
+        rootView.redactedOverlay.isHidden = !viewModel.state.isRedacted
+        
+        view.setNeedsLayout()
+    }
+}
+
+```
+
+Looks much shorter now, right? And please pay attention to that `sink` call on `viewDidLoad()`. As the `receiveValue` closure has a `Void` input argument and `func refreshBalance()` receives no arguments, I can forward the event directly to the ViewModel, there's no need to go through `self` anymore. Just be careful when using this as it will keep a strong reference from the cancellable, which is owned by the ViewController, to the viewModel, which is fine as long as the ViewModel doesn't have a strong reference back to the ViewController.
+
+Let's run our tests again and... boom! Almost all off them failed. That's because `updateView()` is not being called anymore when the state is updated by the ViewModel. How could the ViewController know about that?
+
+Well, maybe we could the ViewController could pass a closure for the ViewModel to call every time the state changes, or maybe we could have a delegate protocol between them, or maybe KVO... No, no, no. All of them would work, but we're here to learn Combine. Not just because I want, but because it's better: we don't need to have weak references, we can have multiple subscribers, we unlock a lot of useful operators, ViewModel doesn't need to inherit from NSObject...
+
+So, what our ViewController needs is that the ViewModel provides a publisher that will send events every time the state changes. So you may have thought about this:
+
+```
+final class BalanceViewModel {
+    private let stateSubject = PassthroughSubject<BalanceViewState, Never>()
+    private(set) var state = BalanceViewState() {
+        didSet {
+            stateSubject.send(state)
+        }
+    }
+    var statePublisher: AnyPublisher<BalanceViewState, Never> {
+        stateSubject.eraseToAnyPublisher()
+    }
+    
+    (...)
+```
+
+Ok, this works for our use case as the state is updated right after the component appears, otherwise our subscriber would have to make an additional call along with the subscription to get the current state, which is not ideal. So let me introduce the `CurrentValueSubject`.
+
+### CurrentValueSubject
+
+This is a subject that stores a value and also publishes changes on it, so that subscribers get the current value right away when they subscribe and any subsequent updates. Let's see how we could fix our current issue using a `CurrentValueSubject`.
+
+```
+final class BalanceViewModel {
+    private let stateSubject: CurrentValueSubject<BalanceViewState, Never>
+    private(set) var state: BalanceViewState {
+        get { stateSubject.value }
+        set { stateSubject.send(newValue) }
+    }
+    var statePublisher: AnyPublisher<BalanceViewState, Never> {
+        stateSubject.eraseToAnyPublisher()
+    }
+    
+    (...)
+    
+    init(service: BalanceService) {
+        self.service = service
+        stateSubject = .init(BalanceViewState())
+        
+        (...)
+    }
+    
+    (...)
+}
+```
+
+Since `stateSubject` already stores a `BalanceViewState` it has become our source of truth, and `state` has become just a proxy to get the current value from `stateSubject` and push changes to `stateSubject` through a `send` call. Just be careful that everytime we change any property under `BalanceViewState`, a new state is published to the subscribers. This is happenning in our code as we change the state properties in place, instead of making a copy of the state, changing everything we need, then writing the new value to `self.state` again. It's not a big deal for our tiny example, just be aware of this.
+
+Also, similarly to what we've done in our `CustomButton`, we don't want to expose the subject in a way that someone can call `send` on it from outside of the ViewModel, so we provide it as an `AnyPublisher` for the ViewController to subscribe. 
+
+Talking about the ViewController, we still need to fix it. All we need to do is add the following after `super.viewDidLoad()`:
+
+```
+viewModel.statePublisher
+    .sink { [weak self] _ in self?.updateView() }
+    .store(in: &cancellables)
+```
+
+We can just ignore the input value for now because we are already accessing it directly in the viewModel inside `func updateView()`. 
+
+It's time to run our tests again. They all pass! Yay! You can see the full diff [here](https://github.com/cicerocamargo/CombineIntro/compare/f94da3262867c551ba6c7665f82516ed617755c1...752a7f9d0c046e6f8337c2ca0396601ca8a430ce).
+
+### @Published
+
+Once you start using `CurrentValueSubject` you'll find yourself repeating the same pattern again and again: the subject is the source of truth, you have a var to access it in a more convenient way, and you also have to expose it to subscribes a read-only publisher. Maybe we could write a property-wrapper to encapsulate all these stuff...
+
+I have good news: it already exists. If you have played with SwiftUI you might also have used the @Published property-wrapper. Let's see how we can use it in our case, since we're not using SwiftUI yet.
+
+All we have to do in `BalanceViewModel` is replacing `stateSubject`, `statePublisher` and that proxy `state` var with:
+
+```
+@Published private(set) var state = BalanceViewState()
+```
+
+It always reads a bit funny because it's "published" (which sounds like it's `public`) but it's also "private" at the same time. Anyway, this is exactly what we need: a value that can only beb written by it's owner (`BalanceViewModel`) but can be observed from the outside. 
+
+Now we have to adjust the ViewController. All we need to do is changing where we were accessing `viewModel.statePublisher` to `viewModel.$state` that we'll have access to the publisher that comes with this property wrapper.
+
+We run our tests again and... they fail... WTF?!
+
+Well, we are ignoring the value that comes from the publisher and reaching the ViewModel again to get the current state. The problem is that `@Published` publishes the new value on the `willSet` of the property it wraps, i.e., the new value hasn't been written yet. This works in SwiftUI because the framework does all the magic and calculates the View's body at the right moment, but in our case if we want to use `@Published` we can't ignore the value, so let's update our `BalanceViewController`:
+
+
+```
+class BalanceViewController: UIViewController {
+    (...)
+    
+    override func viewDidLoad() {
+        super.viewDidLoad()
+
+        viewModel.$state
+            .sink { [weak self] in self?.updateView(state: $0) }
+            .store(in: &cancellables)
+        
+        (...)
+    }
+    
+    (...)
+    
+    private func updateView(state: BalanceViewState) {
+        rootView.refreshButton.isHidden = state.isRefreshing
+        if state.isRefreshing {
+            rootView.activityIndicator.startAnimating()
+        } else {
+            rootView.activityIndicator.stopAnimating()
+        }
+        rootView.valueLabel.text = state.formattedBalance
+        rootView.valueLabel.alpha = state.isRedacted
+            ? BalanceView.alphaForRedactedValueLabel
+            : 1
+        rootView.infoLabel.text = state.infoText(formatDate: formatDate)
+        rootView.infoLabel.textColor = state.infoColor
+        rootView.redactedOverlay.isHidden = !state.isRedacted
+        
+        view.setNeedsLayout()
+    }
+}
+```
+
+An our tests are back to green. [Here](https://github.com/cicerocamargo/CombineIntro/commit/cd9dbd1ea2660ad84d5a865c26259a3ab918e26e)'s the full change.
 
 ## Next
 
