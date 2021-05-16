@@ -5,10 +5,7 @@ import UIKit
 @dynamicMemberLookup
 class BalanceViewController: UIViewController {
     private let rootView = BalanceView()
-    private let service: BalanceService
-    private var state = BalanceViewState() {
-        didSet { updateView() }
-    }
+    private let viewModel: BalanceViewModel
     private let formatDate: (Date) -> String
     private var cancellables: Set<AnyCancellable> = []
     
@@ -16,7 +13,7 @@ class BalanceViewController: UIViewController {
         service: BalanceService,
         formatDate: @escaping (Date) -> String = BalanceViewState.relativeDateFormatter.string(from:)
     ) {
-        self.service = service
+        self.viewModel = .init(service: service)
         self.formatDate = formatDate
         super.init(nibName: nil, bundle: nil)
     }
@@ -33,62 +30,29 @@ class BalanceViewController: UIViewController {
         super.viewDidLoad()
         
         rootView.refreshButton.touchUpInsidePublisher
-            .sink { [weak self] _ in
-                self?.refreshBalance()
-            }
-            .store(in: &cancellables)
-        
-        NotificationCenter.default
-            .publisher(for: UIApplication.willResignActiveNotification)
-            .sink { [weak self] _ in
-                self?.state.isRedacted = true
-            }
-            .store(in: &cancellables)
-        
-        NotificationCenter.default
-            .publisher(for: UIApplication.didBecomeActiveNotification)
-            .sink { [weak self] _ in
-                self?.state.isRedacted = false
-            }
+            .sink(receiveValue: viewModel.refreshBalance)
             .store(in: &cancellables)
     }
     
     override func viewDidAppear(_ animated: Bool) {
         super.viewDidAppear(animated)
-        refreshBalance()
-    }
-    
-    private func refreshBalance() {
-        state.didFail = false
-        state.isRefreshing = true
-        service.refreshBalance { [weak self] result in
-            self?.handleResult(result)
-        }
-    }
-    
-    private func handleResult(_ result: Result<BalanceResponse, Error>) {
-        state.isRefreshing = false
-        do {
-            state.lastResponse = try result.get()
-        } catch {
-            state.didFail = true
-        }
+        viewModel.refreshBalance()
     }
     
     private func updateView() {
-        rootView.refreshButton.isHidden = state.isRefreshing
-        if state.isRefreshing {
+        rootView.refreshButton.isHidden = viewModel.state.isRefreshing
+        if viewModel.state.isRefreshing {
             rootView.activityIndicator.startAnimating()
         } else {
             rootView.activityIndicator.stopAnimating()
         }
-        rootView.valueLabel.text = state.formattedBalance
-        rootView.valueLabel.alpha = state.isRedacted
+        rootView.valueLabel.text = viewModel.state.formattedBalance
+        rootView.valueLabel.alpha = viewModel.state.isRedacted
             ? BalanceView.alphaForRedactedValueLabel
             : 1
-        rootView.infoLabel.text = state.infoText(formatDate: formatDate)
-        rootView.infoLabel.textColor = state.infoColor
-        rootView.redactedOverlay.isHidden = !state.isRedacted
+        rootView.infoLabel.text = viewModel.state.infoText(formatDate: formatDate)
+        rootView.infoLabel.textColor = viewModel.state.infoColor
+        rootView.redactedOverlay.isHidden = !viewModel.state.isRedacted
         
         view.setNeedsLayout()
     }
