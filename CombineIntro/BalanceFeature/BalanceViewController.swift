@@ -34,13 +34,14 @@ class BalanceViewController: UIViewController {
             .store(in: &cancellables)
         
         rootView.refreshButton.touchUpInsidePublisher
-            .sink(receiveValue: viewModel.refreshBalance)
+            .map { _ in BalanceViewEvent.refreshButtonWasTapped }
+            .subscribe(viewModel.eventSubject)
             .store(in: &cancellables)
     }
     
     override func viewDidAppear(_ animated: Bool) {
         super.viewDidAppear(animated)
-        viewModel.refreshBalance()
+        viewModel.eventSubject.send(.viewDidAppear)
     }
     
     private func updateView(state: BalanceViewState) {

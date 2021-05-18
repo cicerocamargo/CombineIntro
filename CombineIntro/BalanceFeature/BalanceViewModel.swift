@@ -3,6 +3,7 @@ import Foundation
 import UIKit
 
 final class BalanceViewModel {
+    let eventSubject = PassthroughSubject<BalanceViewEvent, Never>()
     @Published private(set) var state = BalanceViewState()
 
     private let service: BalanceService
@@ -24,9 +25,20 @@ final class BalanceViewModel {
                 self?.state.isRedacted = false
             }
             .store(in: &cancellables)
+
+        eventSubject
+            .sink { [weak self] in self?.handleEvent($0) }
+            .store(in: &cancellables)
     }
 
-    func refreshBalance() {
+    private func handleEvent(_ event: BalanceViewEvent) {
+        switch event {
+        case .refreshButtonWasTapped, .viewDidAppear:
+            refreshBalance()
+        }
+    }
+
+    private func refreshBalance() {
         state.didFail = false
         state.isRefreshing = true
         service.refreshBalance { [weak self] result in
