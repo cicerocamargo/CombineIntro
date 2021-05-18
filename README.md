@@ -522,6 +522,91 @@ class BalanceViewController: UIViewController {
 
 An our tests are back to green. [Here](https://github.com/cicerocamargo/CombineIntro/commit/cd9dbd1ea2660ad84d5a865c26259a3ab918e26e)'s the full change.
 
+## Other ways of creating subscriptions
+
+In this section we're continuing to refactor our component and along the way we're gonna use new subscription mechanisms.
+
+### Subscribe
+
+One thing that I don't like in our code at the moment is that the ViewController is not exactly sending events do the ViewModel, but giving it commands instead. In other words, when the button is tapped, it doesn't say "hey ViewModel, the refresh button was tapped, maybe you want to do something about it...", no, it tells the ViewModel exatcly what to do. The same applies to `viewDidAppear`. The difference is very subtle, but it matters and we're gonna fix this now.
+
+The first thing we need to do is creating an enum to contain all events that will flow from `BalanceViewController` to `BalanceViewModel`:
+
+```
+enum BalanceViewEvent {
+    case viewDidAppear
+    case refreshButtonWasTapped
+}
+```
+
+The next thing is creating in the ViewModel a subject that will receive all the external events, and make a private subscription to it:
+
+```
+final class BalanceViewModel {
+    let eventSubject = PassthroughSubject<BalanceViewEvent, Never>()
+    (...)
+    
+    init(service: BalanceService) {
+        (...)
+        
+        eventSubject
+            .sink { [weak self] in self?.handleEvent($0) }
+            .store(in: &cancellables)
+    }
+
+    private func handleEvent(_ event: BalanceViewEvent) {
+        switch event {
+        case .refreshButtonWasTapped, .viewDidAppear:
+            refreshBalance()
+        }
+    }
+
+    private func refreshBalance() {
+        (...)
+    }
+
+    (...)
+}
+```
+
+We made our `refreshBalance()` private because we don't want anybody telling our ViewModel what to do, but now we need to update the ViewControler. In `viewDidAppear` we just change `viewModel.refreshBalance()` for `viewModel.eventSubject.send(.viewDidAppear)`. In `viewDidLoad` we'll do it differently: we'll replace that sink on `rootView.refreshButton.touchUpInsidePublisher` with the following:
+
+```
+rootView.refreshButton.touchUpInsidePublisher
+    .map { _ in BalanceViewEvent.refreshButtonWasTapped }
+    .subscribe(viewModel.eventSubject)
+    .store(in: &cancellables)
+```
+
+In the listing above we first use `map`, so that every time the button sends us that `Void` event we transform it into an event that `eventSubject` accepts, then we call `subscribe(viewModel.eventSubject)`, and retain the cancellable (as we were doing before). From now on, every button tap will flow directly into `eventSubject` and our view model will, of course, be listening to the events that pass through `eventSubject`.
+
+Time to run our tests again. They pass. Here's the full [commit](https://github.com/cicerocamargo/CombineIntro/commit/16572300c2df3de5d556492f1bf87bb06c5c6bd3).
+
+Before we move on, I wanted to emphasize that although these changes might look a bit overkill, they bring interesting capabilities to our code.
+
+First, now our ViewModel has a single point for receiveing events and a single var to store and publish the current state. We're very close to having a generic definition to any ViewModel, but that's subject to another article.
+
+The fact that we're receiving events through a subject also unlocks more functionalities. Imagine that we should only refresh the balance on the first time the view appears. We could do this without any additional control var, by usign the `first(where:)` operator:
+
+
+```
+eventSubject
+    .first(where: { $0 == .viewDidAppear })
+    .sink { [weak self] _ in self?.refreshBalance() }
+    .store(in: &cancellables)
+```
+
+You can argue that I could also change the event to a `viewDidLoad` event, and you're right, but if you switch to SwiftUI you only have the `onAppear` event and it can be called multiple times, so you'll end up having to do something like we did.
+
+Another example: imagine that our Balance component is being presented in a larger component and, as our user is new to the app, there's some instructional overlay there explaining some funcionalities and inviting the user to tap in the refresh balance button. When the user taps on it the overlay should be dismissed. Well, anyone that knows our ViewModel can use `eventSubject` to send events to it, but they can also subscribe to this subject and be notified when the ViewModel receives events from any source. This way our larger component can know when the refresh button was tapped without the need of any additional resource like NotificationCenter, callbacks or anything.
+
+So, again, I'm not doing these changes just to push it with Combine. I really think modeling the inteface of my ViewModel in this way is the best way to go.
+
+### Assign
+
+...
+
+
 ## Next
 
 This is a living document, so I'll be updating it as I progress with the next concepts and refactors.
