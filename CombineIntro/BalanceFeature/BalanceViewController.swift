@@ -29,23 +29,30 @@ class BalanceViewController: UIViewController {
     override func viewDidLoad() {
         super.viewDidLoad()
 
+        let isRefreshingPublisher = viewModel.$state
+            .map(\.isRefreshing)
+            .removeDuplicates()
+
+        isRefreshingPublisher
+            .assign(to: \.isHidden, on: rootView.refreshButton)
+            .store(in: &cancellables)
+
         viewModel.$state
             .sink { [weak self] in self?.updateView(state: $0) }
             .store(in: &cancellables)
-        
+
         rootView.refreshButton.touchUpInsidePublisher
             .map { _ in BalanceViewEvent.refreshButtonWasTapped }
             .subscribe(viewModel.eventSubject)
             .store(in: &cancellables)
     }
-    
+
     override func viewDidAppear(_ animated: Bool) {
         super.viewDidAppear(animated)
         viewModel.eventSubject.send(.viewDidAppear)
     }
-    
+
     private func updateView(state: BalanceViewState) {
-        rootView.refreshButton.isHidden = state.isRefreshing
         if state.isRefreshing {
             rootView.activityIndicator.startAnimating()
         } else {
@@ -58,7 +65,7 @@ class BalanceViewController: UIViewController {
         rootView.infoLabel.text = state.infoText(formatDate: formatDate)
         rootView.infoLabel.textColor = state.infoColor
         rootView.redactedOverlay.isHidden = !state.isRedacted
-        
+
         view.setNeedsLayout()
     }
 }
