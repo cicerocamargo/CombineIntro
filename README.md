@@ -604,8 +604,99 @@ So, again, I'm not doing these changes just to push it with Combine. I really th
 
 ### Assign
 
-...
+The last subscription mechanism that I want to show today is the `.assign(to:, on:)` function.
 
+So far, we're binding the state updates to the view updates with the following piece of code is `BalanceViewController`:
+
+```
+override func viewDidLoad() {
+    super.viewDidLoad()
+
+    viewModel.$state
+        .sink { [weak self] in self?.updateView(state: $0) }
+        .store(in: &cancellables)
+    
+    (...)
+}
+
+private func updateView(state: BalanceViewState) {
+    rootView.refreshButton.isHidden = state.isRefreshing
+    if state.isRefreshing {
+        rootView.activityIndicator.startAnimating()
+    } else {
+        rootView.activityIndicator.stopAnimating()
+    }
+    rootView.valueLabel.text = state.formattedBalance
+    rootView.valueLabel.alpha = state.isRedacted
+        ? BalanceView.alphaForRedactedValueLabel
+        : 1
+    rootView.infoLabel.text = state.infoText(formatDate: formatDate)
+    rootView.infoLabel.textColor = state.infoColor
+    rootView.redactedOverlay.isHidden = !state.isRedacted
+
+    view.setNeedsLayout()
+}
+
+```
+
+By doing that we always update everything regardless of what changed from the past value of `viewModel.state`. To give you and example, if only `state.isRefreshing` changed the only views that should really be updated are `rootView.refreshButton` and `rootView.activityIndicator`. So let's extract them from this generic subscription/update flow to more specific ones. I'll start with `rootView.refreshButton` by removing the first line in the `updateView(state:)` function and addding the following to `viewDidLoad()`:
+
+```
+let isRefreshingPublisher = viewModel.$state
+    .map(\.isRefreshing)
+    .removeDuplicates()
+
+isRefreshingPublisher
+    .assign(to: \.isHidden, on: rootView.refreshButton)
+    .store(in: &cancellables)
+```
+
+On the first three lines I take the `$state` publisher from the `viewModel` and use the `map()` operator with a *key path* to derive another publisher that extracts just the `Bool` value of `isRefreshing` from the whole `BalanceViewState` struct. If you don't understand what key paths are is I suggest that you read [this article](https://www.swiftbysundell.com/articles/the-power-of-key-paths-in-swift/) from John Sundell.
+
+Continuing, if I stop here and create a subscription to `viewModel.$state.map(\.isRefreshing)` I'll still be receiving repeated values. For instance, if the current value of the state has `isRefreshing` equal to `false` and the user answers a phone call, this will make the app inactive and `state.isRedacted` will be set to `true`. This change, which has nothing to do with `isRefreshing`, will generate another value for the whole `state` struct and so my subscription will ping me back with another `false` value, which is the value for `isRefreshing` in this new `state`. In order to prevent the reception of duplicated values, we can append the `.removeDuplicates()` operator. This operator which will wrap the result of the `call` and only propagate values to the subscribers when they really changed.
+
+Let's stop and take a look at the type of the `isRefreshingPublisher`:
+
+`Publishers.RemoveDuplicates<Publishers.MapKeyPath<Published<BalanceViewState>.Publisher, Bool>>`
+
+This is a pure application of the [decorator pattern](https://refactoring.guru/design-patterns/decorator) in a heavily generic API, but it reads so complicated (and here we only applied 2 operators) that this is why we always prefer erasing to `AnyPublisher` when we need to declare the type of the publisher explicitly. The really important part at the moment is that `Bool` type. We derived this publisher from a key path of a `Bool` property and that's the type of value that we'll get back when we subscribe to this publisher.
+
+Talking about it let's analyze that `assign(to:on:)` call, which is what effectively creates the subscription. The first parameter is a writable key path and the second parameter is the class that contains this key path. The type of the variable pointed by this key path must match the type of the publisher's value. Just like `sink`, `assign` returns a `AnyCancellable` that must be stored while we want to keep the subscription alive.
+
+The effect of this subscription is that every time `isRefreshingPublisher` publishes a new value it's instanteneously written to `isHidden` on `rootView.refreshButton`, which is exactly what we want. 
+
+A second implication is that the subscription creates a strong refefrence to the object passed as the second parameter, which is fine as `rootView.refreshButton` doesn't hold any strong reference back to our ViewController. We could also write the same subscription as follows:
+
+```
+isRefreshingPublisher
+    .assign(to: \.refreshButton.isHidden, on: rootView)
+    .store(in: &cancellables)
+```
+
+However, we would be creating a retain cycle with the following code:
+
+```
+isRefreshingPublisher
+    .assign(to: \.rootView.refreshButton.isHidden, on: self)
+    .store(in: &cancellables)
+```
+
+Whenever you need to assign to key paths on `self` prefer using `sink { [weak self] value in }` over assign or call `.assign(to: (...), onWeak: self)` using the following extension:
+
+```
+extension Publisher where Failure == Never {
+    func assign<Root: AnyObject>(
+        to keyPath: ReferenceWritableKeyPath<Root, Output>,
+        onWeak object: Root
+    ) -> AnyCancellable {
+        sink { [weak object] value in
+            object?[keyPath: keyPath] = value
+        }
+    }
+}
+```
+
+Now  
 
 ## Next
 
