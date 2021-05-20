@@ -696,7 +696,65 @@ extension Publisher where Failure == Never {
 }
 ```
 
-Now  
+Moving on, this is how our `updateView(state:)` function looks like at the moment:
+
+```
+private func updateView(state: BalanceViewState) {
+    if state.isRefreshing {
+        rootView.activityIndicator.startAnimating()
+    } else {
+        rootView.activityIndicator.stopAnimating()
+    }
+    rootView.valueLabel.text = state.formattedBalance
+    rootView.valueLabel.alpha = state.isRedacted
+        ? BalanceView.alphaForRedactedValueLabel
+        : 1
+    rootView.infoLabel.text = state.infoText(formatDate: formatDate)
+    rootView.infoLabel.textColor = state.infoColor
+    rootView.redactedOverlay.isHidden = !state.isRedacted
+
+    view.setNeedsLayout()
+}
+```
+
+The fact that the state is refreshing also controls the animation of the `rootView.activityIndicator`, as we mentioned before, so let's replace thi if-else on `updateView(state:)` with another subscription to `isRefreshingPublisher` in `viewDidLoad()`:
+
+```
+isRefreshingPublisher
+    .assign(to: \.isAnimating, on: rootView.activityIndicator)
+    .store(in: &cancellables)
+```
+
+But the compiler yels at us with a simple error (that reads very complicated because of the deeply nested generics from `isRefreshingPublisher`):
+
+```
+Key path value type 'ReferenceWritableKeyPath<UIActivityIndicatorView, Publishers.RemoveDuplicates<Publishers.MapKeyPath<Published<BalanceViewState>.Publisher, Bool>>.Output>' (aka 'ReferenceWritableKeyPath<UIActivityIndicatorView, Bool>') cannot be converted to contextual type 'KeyPath<UIActivityIndicatorView, Publishers.RemoveDuplicates<Publishers.MapKeyPath<Published<BalanceViewState>.Publisher, Bool>>.Output>' (aka 'KeyPath<UIActivityIndicatorView, Bool>')
+```
+
+Don't be intimidated. Those "aka"s actually help a lot. The problem is that `isAnimating` is a readonly property on `UIActivityIndicatorView` so we either need to go back to our `sink` or find another way to use `assign`. I'll go with the second option, by creating the following extension:
+
+```
+extension UIActivityIndicatorView {
+    var writableIsAnimating: Bool {
+        get { isAnimating }
+        set {
+            if newValue {
+                startAnimating()
+            } else {
+                stopAnimating()
+            }
+        }
+    }
+}
+```
+
+Now all we need to do is replacing that `\.isAnimating` key path with `\.writableIsAnimating` and run the tests again. Here is the [commit diff](https://github.com/cicerocamargo/CombineIntro/commit/d48d8645689abbd3907ae48e35dd99307f812a46).
+
+You might be thinking that creating these fine-grained subscriptions for each subview that we need to update is completely overkill for our component.
+And you are right. I went ahead and replaced every view update that we had in `BalanceViewController` with calls to `assign` after applying a couple of operators, [check it out](https://github.com/cicerocamargo/CombineIntro/commit/59194faa4142a91fdbd2072242ef145306dae8e9). Besides being unnecessarily precise (UIKit is optimized enough to know when some property change will really require a new render phase), it's much harder to read than our old `updateView(state:)` function, even after cleaning up all those `.store(in:)` calls.
+
+I'm doing this for explanatory purposes, of course, but we usually work on more complex screens right? Maybe our balance component could be a dumb one and the state would be a `var` on the `BalanceViewController` that can be written from the outsise, and you could use `assign` in a parent component to write the whole state `var` instead of single `Bool`s or `String`s... Anyway keep this mechanism in mind to use it at a higher level when it fit's the problem at hand better than `sink` or `subscribe`.
+
 
 ## Next
 
