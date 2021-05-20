@@ -37,6 +37,10 @@ class BalanceViewController: UIViewController {
             .assign(to: \.isHidden, on: rootView.refreshButton)
             .store(in: &cancellables)
 
+        isRefreshingPublisher
+            .assign(to: \.writableIsAnimating, on: rootView.activityIndicator)
+            .store(in: &cancellables)
+
         viewModel.$state
             .sink { [weak self] in self?.updateView(state: $0) }
             .store(in: &cancellables)
@@ -53,11 +57,6 @@ class BalanceViewController: UIViewController {
     }
 
     private func updateView(state: BalanceViewState) {
-        if state.isRefreshing {
-            rootView.activityIndicator.startAnimating()
-        } else {
-            rootView.activityIndicator.stopAnimating()
-        }
         rootView.valueLabel.text = state.formattedBalance
         rootView.valueLabel.alpha = state.isRedacted
             ? BalanceView.alphaForRedactedValueLabel
