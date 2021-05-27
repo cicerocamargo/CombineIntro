@@ -522,6 +522,246 @@ class BalanceViewController: UIViewController {
 
 And our tests are back to green. [Here](https://github.com/cicerocamargo/CombineIntro/commit/cd9dbd1ea2660ad84d5a865c26259a3ab918e26e)'s the full change.
 
+## Other ways of creating subscriptions
+
+In this section we're refactoring our component even further and along the way we're gonna learn 2 new subscription mechanisms: **Subscribe** and **Assign**.
+
+### Subscribe
+
+One thing that I don't like in our code at the moment is that the `ViewController` is not exactly sending *events* do the `ViewModel`, but giving it *commands* instead. In other words, when the button is tapped `ViewController` doesn't say *"hey ViewModel, the refresh button was tapped, you may want to do something about it now..."*. No, it tells the ViewModel exatcly what to do: *"Refresh the balance!"*. The same applies to `viewDidAppear`. 
+
+This difference is subtle, but it matters and we're gonna fix this now. The first thing we're going to do is creating an `enum` to contain all events that flow from `BalanceViewController` to `BalanceViewModel`:
+
+```
+enum BalanceViewEvent {
+    case viewDidAppear
+    case refreshButtonWasTapped
+}
+```
+
+The next step is creating a subject in `BalanceViewModel` that will receive all the external events, and make a private subscription to it using `sink`:
+
+```
+final class BalanceViewModel {
+    let eventSubject = PassthroughSubject<BalanceViewEvent, Never>()
+    (...)
+    
+    init(service: BalanceService) {
+        (...)
+        
+        eventSubject
+            .sink { [weak self] in self?.handleEvent($0) }
+            .store(in: &cancellables)
+    }
+
+    private func handleEvent(_ event: BalanceViewEvent) {
+        switch event {
+        case .refreshButtonWasTapped, .viewDidAppear:
+            refreshBalance()
+        }
+    }
+
+    private func refreshBalance() {
+        (...)
+    }
+
+    (...)
+}
+```
+
+With this change we could make `refreshBalance()` private because, again, we don't want anybody telling our *ViewModel* what to do. The only thing an external caller
+can do with our `ViewModel` now is sendind it a `BalanceViewEvent` through the `eventSubject` and reading or subscribing to the `ViewModel`'s state.  
+
+Now we need to update the `ViewControler`. In `viewDidAppear` we just change `viewModel.refreshBalance()` for `viewModel.eventSubject.send(.viewDidAppear)`. In `viewDidLoad` is where we're gonna do it differently: we'll replace that `sink` on `rootView.refreshButton.touchUpInsidePublisher` with the following:
+
+```
+rootView.refreshButton.touchUpInsidePublisher
+    .map { _ in BalanceViewEvent.refreshButtonWasTapped }
+    .subscribe(viewModel.eventSubject)
+    .store(in: &cancellables)
+```
+
+In the listing above we first append a `map` operator so that every time the button sends us that `Void` touch event we transform it into a proper `BalanceViewEvent`, which is the type of event that `eventSubject` accepts. Then we call `subscribe(viewModel.eventSubject)` on the resulting publisher, and retain the cancellable (as we were doing before). 
+
+From now on, every button tap will be transformed into a `BalanceViewEvent.refreshButtonWasTapped` and this event flow directly into `eventSubject`, and our `ViewModel` will, of course, be listening to all the events that pass through `eventSubject`.
+
+Time to run our tests again. They pass. Here's the [commit](https://github.com/cicerocamargo/CombineIntro/commit/16572300c2df3de5d556492f1bf87bb06c5c6bd3) with the change.
+
+#### Is replacing functions with subjects worth it?
+
+Before we move on, I wanted to analyze what we did on the `ViewModel`. Besides the mental shift from commands to events, we replaced function calls (we had only one in our simple example, but we usually have more than that) with a single subject, where the `ViewModel` can receive all the events it knows how to handle. This change looks a bit overkill for our tiny app, but they bring interesting capabilities to our code.
+
+First, now that our ViewModel has a single point for receiveing events and a single var to store and publish the current state, we're very close to having a generic definition that we could use for *any* `ViewModel`, and this could even be used to decouple the `ViewController` from the `ViewModel` as long as they work with the same type for the events and for the state. But that's subject for another article.
+
+Second, the fact that we're receiving events through a subject allows the viewModel to apply operators to different events. Imagine that we should only refresh the balance on the first time the view appears. We could do this without any additional var to control the number of times the "view did appear", the only thing we need to do is use the `first(where:)` operator:
+
+
+```
+eventSubject
+    .first(where: { $0 == .viewDidAppear })
+    .sink { [weak self] _ in self?.refreshBalance() }
+    .store(in: &cancellables)
+```
+
+You can argue that I could also change the `viewDidAppear` event to a `viewDidLoad` event, and you're right, but if you switch to SwiftUI, for instance, you only have the `onAppear` event and it can be called multiple times, so if you have a requirement like this (refreshing automatically *only in the first time* the view appears) with a SwiftUI View you'll end up having to do something like we did above.
+
+Another example: imagine that our *BalanceViewController* is a child of a larger *ViewController* that will show a lot of other things like last transactions the user made; as the user is new to the app, this parent `ViewController` is showing a text overlay explaining the balance widget and inviting the user to tap into the refresh balance button. When the user taps on it, in addition to refreshing the balance, the overlay should be dismissed. Well, anyone that knows our ViewModel can use `eventSubject` to send events to it,  right? But they can also subscribe to this subject and also be notified when the ViewModel *receives* events from any source. This way our outer `ViewController` can know when the refresh button was tapped without the need for any additional `NSNotification`, callback or anything.
+
+So, again, I'm not doing these changes just to push it with Combine. I really think modeling the inteface of my ViewModel in this way has several benefits.
+
+### Assign
+
+The last subscription mechanism that I want to show today is the `.assign(to:on:)` function.
+
+So far, we're binding the state updates to the view updates with the following piece of code in our `BalanceViewController`:
+
+```
+override func viewDidLoad() {
+    super.viewDidLoad()
+
+    viewModel.$state
+        .sink { [weak self] in self?.updateView(state: $0) }
+        .store(in: &cancellables)
+    
+    (...)
+}
+
+private func updateView(state: BalanceViewState) {
+    rootView.refreshButton.isHidden = state.isRefreshing
+    if state.isRefreshing {
+        rootView.activityIndicator.startAnimating()
+    } else {
+        rootView.activityIndicator.stopAnimating()
+    }
+    rootView.valueLabel.text = state.formattedBalance
+    rootView.valueLabel.alpha = state.isRedacted
+        ? BalanceView.alphaForRedactedValueLabel
+        : 1
+    rootView.infoLabel.text = state.infoText(formatDate: formatDate)
+    rootView.infoLabel.textColor = state.infoColor
+    rootView.redactedOverlay.isHidden = !state.isRedacted
+}
+
+```
+
+By doing that we always update everything regardless of what changed from the past value of `viewModel.state`. To give you and example, if only `state.isRefreshing` changed the only views that should really be updated are `rootView.refreshButton` and `rootView.activityIndicator`, but in our case we're also changing texts, alphas, colors, etc., anyway.
+
+So let's extract the updates to `rootView.refreshButton` and `rootView.activityIndicator` from this generic flow to more specific subscriptions. I'll start with `rootView.refreshButton` by removing the first line in the `updateView(state:)` function and addding the following to `viewDidLoad()`:
+
+```
+let isRefreshingPublisher = viewModel.$state
+    .map(\.isRefreshing)
+    .removeDuplicates()
+
+isRefreshingPublisher
+    .assign(to: \.isHidden, on: rootView.refreshButton)
+    .store(in: &cancellables)
+```
+
+On the first three lines I take the `$state` publisher from the `viewModel` and use the `map()` operator with a *key path* to derive another publisher that extracts just the `Bool` value of `isRefreshing` from the whole `BalanceViewState` struct. If you don't understand what key paths are is I suggest that you read [this article](https://www.swiftbysundell.com/articles/the-power-of-key-paths-in-swift/) from John Sundell.
+
+Continuing, if I stop here and create a subscription to `viewModel.$state.map(\.isRefreshing)` I'll still be receiving repeated values. For instance, if the current value of the state has `isRefreshing` equal to `false` and the user answers a phone call, this will make the app inactive and `state.isRedacted` will be set to `true`. This change, which has nothing to do with `isRefreshing`, will generate another value for the whole `state` struct and `viewModel.$state.map(\.isRefreshing)` will ping me back with another `false` value, which is the value for `isRefreshing` in this new `state`. To prevent the reception of duplicated values, we can append the `.removeDuplicates()` operator. This operator will wrap the publisher resulting from the `map` call and only propagate values to the subscribers when they really changed.
+
+Let's stop and take a look at the type of the `isRefreshingPublisher`:
+
+`Publishers.RemoveDuplicates<Publishers.MapKeyPath<Published<BalanceViewState>.Publisher, Bool>>`
+
+This is a pure application of the [decorator pattern](https://refactoring.guru/design-patterns/decorator) in a heavily generic API, but it reads so complicated (and here we only applied 2 operators) that this is why we always prefer erasing to `AnyPublisher` when we need to declare the type of the publisher explicitly. The really important part of this type is that `Bool` at the end. We derived this publisher from a key path of a `Bool` property and that's the type of value that we'll get back when we subscribe to this publisher.
+
+Talking about subscription, let's analyze that `assign(to:on:)` call, which effectively creates the subscription. The first parameter is a writable key path and the second parameter is the class that contains this key path. The type of the variable pointed by this key path must match the type of the publisher's value (that `Bool` we emphasized before). Just like `sink`, `assign` returns a `AnyCancellable` that must be stored while we want to keep the subscription alive.
+
+The effect of this subscription is that every time `isRefreshingPublisher` publishes a new value it's instanteneously *assigned* to `isHidden` on `rootView.refreshButton`, which is exactly what we want. 
+
+A second implication is that the subscription creates a strong refefrence to the object passed as the second parameter, which is fine as `rootView.refreshButton` doesn't hold any strong reference back to our ViewController, the owner of the cancellable. We could also write the same subscription targeting the `rootView` instead:
+
+```
+isRefreshingPublisher
+    .assign(to: \.refreshButton.isHidden, on: rootView)
+    .store(in: &cancellables)
+```
+
+This would also work fine. However, we would be creating a retain cycle with the following code:
+
+```
+isRefreshingPublisher
+    .assign(to: \.rootView.refreshButton.isHidden, on: self)
+    .store(in: &cancellables)
+```
+
+Whenever you need to assign to key paths on `self` prefer using `sink { [weak self] value in }` instead or call `.assign(to: (...), onWeak: self)` using the following extension:
+
+```
+extension Publisher where Failure == Never {
+    func assign<Root: AnyObject>(
+        to keyPath: ReferenceWritableKeyPath<Root, Output>,
+        onWeak object: Root
+    ) -> AnyCancellable {
+        sink { [weak object] value in
+            object?[keyPath: keyPath] = value
+        }
+    }
+}
+```
+
+Moving on, this is how our `updateView(state:)` function looks like at the moment:
+
+```
+private func updateView(state: BalanceViewState) {
+    if state.isRefreshing {
+        rootView.activityIndicator.startAnimating()
+    } else {
+        rootView.activityIndicator.stopAnimating()
+    }
+    rootView.valueLabel.text = state.formattedBalance
+    rootView.valueLabel.alpha = state.isRedacted
+        ? BalanceView.alphaForRedactedValueLabel
+        : 1
+    rootView.infoLabel.text = state.infoText(formatDate: formatDate)
+    rootView.infoLabel.textColor = state.infoColor
+    rootView.redactedOverlay.isHidden = !state.isRedacted
+}
+```
+
+As we mentioned before, `state.isRefreshing` also controls the animation of the `rootView.activityIndicator`, so let's replace this if-else on `updateView(state:)` with another subscription to `isRefreshingPublisher` in `viewDidLoad()`:
+
+```
+isRefreshingPublisher
+    .assign(to: \.isAnimating, on: rootView.activityIndicator)
+    .store(in: &cancellables)
+```
+
+But the compiler yells at us with an error that reads very complicated because of the deeply nested generics from `isRefreshingPublisher`:
+
+```
+Key path value type 'ReferenceWritableKeyPath<UIActivityIndicatorView, Publishers.RemoveDuplicates<Publishers.MapKeyPath<Published<BalanceViewState>.Publisher, Bool>>.Output>' (aka 'ReferenceWritableKeyPath<UIActivityIndicatorView, Bool>') cannot be converted to contextual type 'KeyPath<UIActivityIndicatorView, Publishers.RemoveDuplicates<Publishers.MapKeyPath<Published<BalanceViewState>.Publisher, Bool>>.Output>' (aka 'KeyPath<UIActivityIndicatorView, Bool>')
+```
+
+Don't be intimidated. Those "aka"s actually help a lot. The problem is that `isAnimating` is a readonly property on `UIActivityIndicatorView` and we obviously can't have a writable keypath from a readonly property. So we either need to go back to using a `sink` or find another way to use `assign`. I'll go with the second option, by creating the following extension:
+
+```
+extension UIActivityIndicatorView {
+    var writableIsAnimating: Bool {
+        get { isAnimating }
+        set {
+            if newValue {
+                startAnimating()
+            } else {
+                stopAnimating()
+            }
+        }
+    }
+}
+```
+
+Now all we need to do is replacing that `\.isAnimating` key path with `\.writableIsAnimating` and run the tests again. Here is the [commit diff](https://github.com/cicerocamargo/CombineIntro/commit/d48d8645689abbd3907ae48e35dd99307f812a46).
+
+You might be thinking that creating these fine-grained subscriptions for each subview that we need to update is overkill for our component.
+And you are completely right. I went ahead and replaced every view update that we had in `BalanceViewController` with calls to `assign` after applying a couple of operators, [check it out](https://github.com/cicerocamargo/CombineIntro/commit/59194faa4142a91fdbd2072242ef145306dae8e9). 
+
+Besides being unnecessarily precise (UIKit is optimized enough to know when some property update will really require a new render phase), this is much harder to read than our old `updateView(state:)` function, even after cleaning up all those `.store(in:)` calls.
+
+I'm doing this for explanatory purposes, of course, but we usually work on more complex screens right? You'll probably spot better opportunities to use `assign` at a higher level as you start using Combine in your apps, specially with UIKit, so keep these mechanisms in mind and don't always chose `sink` without reflecting before if `assign` or `subscribe` could be applicable **AND** make your code better.
+
 ## Next
 
 This is a living document, so I'll be updating it as I progress with the next concepts and refactors.

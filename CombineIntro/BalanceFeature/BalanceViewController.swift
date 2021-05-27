@@ -29,36 +29,63 @@ class BalanceViewController: UIViewController {
     override func viewDidLoad() {
         super.viewDidLoad()
 
-        viewModel.$state
-            .sink { [weak self] in self?.updateView(state: $0) }
-            .store(in: &cancellables)
-        
-        rootView.refreshButton.touchUpInsidePublisher
-            .sink(receiveValue: viewModel.refreshBalance)
-            .store(in: &cancellables)
+        let formatDate = self.formatDate
+
+        cancellables = [
+            viewModel.$state
+                .map(\.isRefreshing)
+                .removeDuplicates()
+                .assign(to: \.isHidden, on: rootView.refreshButton),
+
+            viewModel.$state
+                .map(\.isRefreshing)
+                .removeDuplicates()
+                .assign(
+                    to: \.writableIsAnimating,
+                    on: rootView.activityIndicator
+                ),
+
+            viewModel.$state
+                .map(\.formattedBalance)
+                .removeDuplicates()
+                .map(Optional.some)
+                .assign(to: \.text, on: rootView.valueLabel),
+
+            viewModel.$state
+                .map { $0.infoText(formatDate: formatDate) }
+                .removeDuplicates()
+                .map(Optional.some)
+                .assign(to: \.text, on: rootView.infoLabel),
+
+            viewModel.$state
+                .map(\.infoColor)
+                .removeDuplicates()
+                .map(Optional.some)
+                .assign(to: \.textColor, on: rootView.infoLabel),
+
+            viewModel.$state
+                .map(\.isRedacted)
+                .removeDuplicates()
+                .map { isRedacted in
+                    isRedacted ? BalanceView.alphaForRedactedValueLabel : 1
+                }
+                .assign(to: \.alpha, on: rootView.valueLabel),
+
+            viewModel.$state
+                .map(\.isRedacted)
+                .removeDuplicates()
+                .map { !$0 }
+                .assign(to: \.isHidden, on: rootView.redactedOverlay),
+
+            rootView.refreshButton.touchUpInsidePublisher
+                .map { _ in BalanceViewEvent.refreshButtonWasTapped }
+                .subscribe(viewModel.eventSubject)
+        ]
     }
-    
+
     override func viewDidAppear(_ animated: Bool) {
         super.viewDidAppear(animated)
-        viewModel.refreshBalance()
-    }
-    
-    private func updateView(state: BalanceViewState) {
-        rootView.refreshButton.isHidden = state.isRefreshing
-        if state.isRefreshing {
-            rootView.activityIndicator.startAnimating()
-        } else {
-            rootView.activityIndicator.stopAnimating()
-        }
-        rootView.valueLabel.text = state.formattedBalance
-        rootView.valueLabel.alpha = state.isRedacted
-            ? BalanceView.alphaForRedactedValueLabel
-            : 1
-        rootView.infoLabel.text = state.infoText(formatDate: formatDate)
-        rootView.infoLabel.textColor = state.infoColor
-        rootView.redactedOverlay.isHidden = !state.isRedacted
-        
-        view.setNeedsLayout()
+        viewModel.eventSubject.send(.viewDidAppear)
     }
 }
 
