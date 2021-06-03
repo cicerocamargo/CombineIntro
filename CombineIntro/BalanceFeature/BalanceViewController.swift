@@ -94,7 +94,7 @@ import SwiftUI
 
 struct BalanceViewController_Previews: PreviewProvider {
     static private func makePreview() -> some View {
-        BalanceViewController(service: FakeBalanceService())
+        BalanceViewController(service: LiveBalanceService())
             .staticRepresentable
     }
     
