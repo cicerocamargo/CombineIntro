@@ -1,3 +1,4 @@
+import Combine
 @testable import CombineIntro
 import XCTest
 
@@ -229,12 +230,22 @@ private extension BalanceViewControllerTests {
         private(set) var refreshCount = 0
         var result: Result<BalanceResponse, Error>?
 
-        func refreshBalance(
-            completion: @escaping (Result<BalanceResponse, Error>) -> Void
-        ) {
+        func refreshBalance() -> AnyPublisher<BalanceResponse, Error> {
             refreshCount += 1
-            if let result = result {
-                completion(result)
+
+            switch result {
+            case .failure(let error):
+                return Fail(outputType: BalanceResponse.self, failure: error)
+                    .eraseToAnyPublisher()
+
+            case .success(let response):
+                return Just(response)
+                    .setFailureType(to: Error.self)
+                    .eraseToAnyPublisher()
+
+            case .none:
+                return Empty(completeImmediately: false)
+                    .eraseToAnyPublisher()
             }
         }
     }
