@@ -762,10 +762,213 @@ Besides being unnecessarily precise (UIKit is optimized enough to know when some
 
 I'm doing this for explanatory purposes, of course, but we usually work on more complex screens right? You'll probably spot better opportunities to use `assign` at a higher level as you start using Combine in your apps, specially with UIKit, so keep these mechanisms in mind and don't always chose `sink` without reflecting before if `assign` or `subscribe` could be applicable **AND** make your code better.
 
-## Next
+## Using combine to make requests
 
-This is a living document, so I'll be updating it as I progress with the next concepts and refactors.
+The only layer where we didn't use Combine so far is the Networking/Service layer, so let's change that now. The quickest way to accomplish that is using `Future` to adapt our callback-based `BalanceService ` API to return a publisher. Let's take a look.
 
-You can start watching the repo and follow me on [Twitter](https://twitter.com/cicerocamargo) or [LinkedIn](https://www.linkedin.com/in/cicerocamargo/) to be notified about updates.
+### Future
 
-If you have suggestions, corrections, etc., feel free to open a Pull Request or send me a message.
+`Future` is a special kind of `Publisher` that we can use to manually send a value asychronously, just like we did with `Subject`s, but we're only allowed to either send a single value and complete or fail (if you come from RxSwift, it's the same as `Single`). `Future` is perfect to adapt closure-based APIs to Combine, and I'll create an extension of our `BalanceService` protocol to show you exactly what I mean.
+
+```
+extension BalanceService {
+    func refreshBalance() -> AnyPublisher<BalanceResponse, Error> {
+        Future { promise in
+            self.refreshBalance { result in
+                do {
+                    let response = try result.get()
+                    promise(.success(response))
+                } catch {
+                    promise(.failure(error))
+                }
+            }
+        }
+        .eraseToAnyPublisher()
+    }
+}
+```
+
+Our new version of `refreshBalance()` calls the old one inside a closure that `Future` receives on its constructor, where we can execute our asynchronous tasks. This closure also provides another closure as input, the `promise` parameter, and we should use that to call back when our asynchronous tasks are finished with a `Result` object indicating a success or a failure. In fact, the shape of the `promise` closure is exactly the same as the `completion` parameter in the original `refreshBalance` function, so we don't really need to unwrap the result, we can just forward `promise` like this:
+
+```
+extension BalanceService {
+    func refreshBalance() -> AnyPublisher<BalanceResponse, Error> {
+        Future { promise in
+            self.refreshBalance(completion: promise)
+        }
+        .eraseToAnyPublisher()
+    }
+}
+```
+
+We could also return `Future<BalanceResponse, Error>` instead of an `AnyPublisher`, but that would leak some implementation details to the caller so I usually prefer erasing to `AnyPublisher`. 
+
+Now we need to adjust `BalanceViewModel` to call the new version of `refreshBalance()`, and we'll do it by calling `sink` on the "erased" `Future`:
+
+```
+final class BalanceViewModel {
+    (...)
+
+    private func refreshBalance() {
+        state.didFail = false
+        state.isRefreshing = true
+        service.refreshBalance()
+            .sink(
+                receiveCompletion: { [weak self] completion in
+                    self?.state.isRefreshing = false
+                    if case .failure = completion {
+                        self?.state.didFail = true
+                    }
+                },
+                receiveValue: { [weak self] value in
+                    self?.state.lastResponse = value
+                }
+            )
+            .store(in: &cancellables)
+    }
+}
+```
+
+This time we can't ignore the `receiveCompletion` closure because the Publisher's failure type is `Error` (instead of `Never`), so it can really fail.
+
+I won't lie: this `sink` with two closures is pretty ugly and makes me remember the APIs from the old ObjC days, and even some from early versions of Swift, before we had the `Result` type (which I first saw in [Alamofire](https://github.com/Alamofire/Alamofire), long before we had an official version in the Foundation framework). On the other hand, this makes it clear to the caller that these two callbacks may not be called together, example: if we [prepend](https://developer.apple.com/documentation/combine/publisher/prepend(_:)-v9sb) a cached value synchronously then fire the request we'll have `receiveValue` called twice before `receiveCompletion`.
+
+Let's run our tests to see if everything works. Tests pass. [Here](https://github.com/cicerocamargo/CombineIntro/commit/71ea1a3759352346ac82e55bf26539160baf91dc) is the full commit.
+
+One thing that's missing here is the following: if the original `refreshBalance(completion:)` function would return some kind of cancellable token, we should cancel the original request manually as the subscriptions to our `Future` are cancelled. The way for us to receive that information from `Future` is appending a [handleEvents(receiveCancel: { ... })](https://developer.apple.com/documentation/combine/publisher/handleevents(receivesubscription:receiveoutput:receivecompletion:receivecancel:receiverequest:)) call before `eraseToAnyPublisher()`. However, the whole thing would be a bit more complicated than that and would go beyond the scope of this article, so I'll leave it as an exercise to the reader.
+
+### URLSession extensions
+
+Now we're gonna throw our `BalanceService` extension away and use Combine directly in the definition of the protocol to see what happens. This is our new `BalanceService` protocol.
+
+```
+protocol BalanceService {
+    func refreshBalance() -> AnyPublisher<BalanceResponse, Error>
+}
+```
+
+I'll also get rid of the `FakeBalanceService` and implement a live version, which makes a real request to fetch this JSON [here](https://api.jsonbin.io/b/60b76b002d9ed65a6a7d6980) and parses the reponse data to a `BalanceResponse`. For that I'll use the Combine extensions that come with `URLSession`, but you can choose your preferred one. Good networking libraries like [Alamofire](https://github.com/Alamofire/Alamofire) will provide built-in support for Combine.
+
+We'll start by making `BalanceResponse` a `Decodable` type and updating `App Transport Security Settings` in my info plist to allow arbitrary loads. Then we implement the live service like this:
+
+```
+struct LiveBalanceService: BalanceService {
+    private let decoder: JSONDecoder = {
+        let decoder = JSONDecoder()
+        let dateFormatter = DateFormatter()
+        dateFormatter.locale = Locale(identifier: "en_US_POSIX")
+        dateFormatter.dateFormat = "yyyy-MM-dd HH:mm:ss Z"
+        decoder.dateDecodingStrategy = .formatted(dateFormatter)
+        return decoder
+    }()
+
+    private let url = URL(
+        string: "https://api.jsonbin.io/b/60b76b002d9ed65a6a7d6980"
+    )!
+
+    func refreshBalance() -> AnyPublisher<BalanceResponse, Error> {
+        URLSession.shared
+            .dataTaskPublisher(for: url) // 1
+            .tryMap { output -> Data in // 2
+                guard let httpResponse = output.response as? HTTPURLResponse,
+                      httpResponse.statusCode == 200 else {
+                    throw URLError(.badServerResponse)
+                }
+                return output.data
+            }
+            .decode(type: BalanceResponse.self, decoder: decoder) // 3
+            .receive(on: DispatchQueue.main) // 4
+            .eraseToAnyPublisher() // 5
+    }
+}
+```
+
+Starting from the `refreshBalance()` function:
+
+1. We use the `dataTaskPublisher(for url: URL)` extension from `URLSession` to make a simple `GET` request; if we needed to do a custom request we would use `dataTaskPublisher(for request: URLRequest)` instead;
+2. When the request returns we check its output (of type `URLSession.DataTaskPublisher.Output`) to validate the response status code, and if it's OK we propagate the `Data`;
+3. We decode the response `Data` to a `BalanceResponse` using a custom `JSONDecoder` that knows how to convert `"2021-06-02 11:01:48 +0000"` into a `Date` object;
+4. As `URLSession.shared` works on its own queue, we use `receive(on:)` to dispatch the `BalanceResponse` to the main queue before it reaches our ViewModel, which will generate the UI updates and must do that on the main queue;
+5. Last, we erase the resulting publisher to `AnyPublisher`, otherwise we would have a huge return type (as we saw in the previous articles), and that would have to leak to the protocol;
+
+About step 4, we could have done the async dispatch inside our ViewModel too but then we would have asynchronous code in our tests. Furthermore threading is a [cross-cutting concern](https://en.wikipedia.org/wiki/Cross-cutting_concern) and we can apply other design patterns to solve that in a way that our business logic doesn't have to know about threads. I'll make sure I come back to this in another article.
+
+Now we need to replace all the places where we were using `FakeBalanceService` to use `LiveBalanceService`. This will include the `BalanceViewController` previews which is not ideal, but we'll return to this soon. After some tweaks we get the project compiling again and we can see our live service in action. 
+
+The test target, however, still need adjustments. I usually fix the tests before comitting the changes but this time I'll commit the current state as it is so that you can take a look at the [diff](https://github.com/cicerocamargo/CombineIntro/commit/bd9c234118957f41946490ef1d9ffa9d5d334db4).
+
+### Synchronous Publishers
+
+It's time to fix our `BalanceServiceStub` so that it conforms to `BalanceService` again. Let's recap how it looks at the moment:
+
+```
+class BalanceServiceStub: BalanceService {
+    private(set) var refreshCount = 0
+    var result: Result<BalanceResponse, Error>?
+
+    func refreshBalance(
+        completion: @escaping (Result<BalanceResponse, Error>) -> Void
+    ) {
+        refreshCount += 1
+        if let result = result {
+            completion(result)
+        }
+    }
+}
+```
+
+When we need to test scenarios where the service returns some response, we set that `result` variable to `.success(BalanceResponse(...))` so that when `refreshBalance` is called we call `completion` synchronously with the stubbed result. We can also set `result` to `.failure(...)` when we want to test failure scenarios, or set it to `nil/.none` when we want to check the system state when it's waiting for the response.
+
+Well, now that we know how `Future` works we could be lazy and add that same function to `BalanceServiceStub` to fix everything:
+
+```
+func refreshBalance() -> AnyPublisher<BalanceResponse, Error> {
+    Future { promise in
+        self.refreshBalance(completion: promise)
+    }
+    .eraseToAnyPublisher()
+}
+```
+
+As `completion` is always called synchronously this works, but I want to take another path and show you other useful `Publisher`s. This is how we're gonna implement `refreshBalance`:
+
+```
+func refreshBalance() -> AnyPublisher<BalanceResponse, Error> {
+    refreshCount += 1
+
+    switch result {
+    case .failure(let error):
+        return Fail(outputType: BalanceResponse.self, failure: error)
+            .eraseToAnyPublisher()
+
+    case .success(let response):
+        return Just(response)
+            .setFailureType(to: Error.self)
+            .eraseToAnyPublisher()
+
+    case .none:
+        return Empty(completeImmediately: false)
+            .eraseToAnyPublisher()
+    }
+}
+```
+
+Let's analyze them from the perspective of the subscriber:
+
+1. `Just` sends its value and completes successfully, everything happening synchronously when you `sink` to it; we also need to set an appropriate failure type here, because `Just` has a `Never` failure type by default;  
+2. `Fail` will also complete immediately with a `failure` completion containing the `error` and won't send any value;
+3. `Empty` will never send any value too but will complete immediately with `.success` unless we create it with `completeImmediately: false`, in this case it'll never complete as well.
+
+With our `BalanceServiceStub` fixed we can run the tests again. They pass. [Commit](https://github.com/cicerocamargo/CombineIntro/commit/334463a3f901eeeb0307e4acae825386cf9264cf) and push. We're done!
+
+## Final thougths
+
+By constantly refactoring this simple app we could explore a lot of ways to "Combinify" existing applications, and really hope this process helped you understand the fundamentals of the framework and also to think in a reactive way.
+
+I'll certainly write more Combine in the future to explore different ways to compose publishers, advanced operators, back pressure, etc., but I think what we saw here covers a lot of what we do in a daily basis.
+
+If this helped you, it's your turn to help me by sharing this repo with your dev network. You can also send me a message on [LinkedIn](https://www.linkedin.com/in/cicerocamargo/) or [Twitter](https://twitter.com/cicerocamargo), I'd love to hear your feedback.
+
+If you have suggestions, corrections, etc., feel free to open a Pull Request.
+
+See you next time!
